@@ -1,0 +1,96 @@
+---
+title: "Praxisbeispiel: Zeitreihenanalyse"
+output: html_notebook
+---
+
+```{r initializeNotebook}
+library(tidyverse)
+```
+
+## Was steckt in den aufbereiteten Daten?
+
+- **Daten**: Umsatzerlösbuchungen des Testmandanten.
+- **Abhängige Variable**: Tagessaldo, i.S.v. der Summe über SOLL und HABEN pro Belegdatum
+- **Erklärende Variable(n)**: *keine*, nur Trendschätzung
+- **Modell**: $y_t = \beta_0 + \sum_{k=1}^{K=7} \beta_k t^k + e_t$, mit
+    - $t$ Tag des Jahres
+    - $\beta_0 + \sum_{k=1}^{K=7}  \beta_k t^k$ Trendschätzung (systematischer Teil)
+    - $e_t$ Abweichung vom Trend (stochastischer Teil)
+
+## Wie sehen die Daten aus?
+
+```{r exploration, fig.width=8, fig.height=3.5}
+load("../data/processed/ue_by_belegdatum.RData")
+topn <- 5
+topn_ue <- head(
+  ue_by_belegdatum[with(ue_by_belegdatum, order(abs(Betrag), decreasing = TRUE)), ],
+  n = topn
+)
+
+p <- ggplot(
+  data = ue_by_belegdatum,
+  mapping = aes(x = Belegdatum, y = Betrag)
+) +
+  geom_point()+
+  geom_point(data = topn_ue, shape = 21, fill = "white") +
+  geom_text(data = topn_ue, mapping = aes(label = Belegdatum), hjust = 1.1) +
+  labs(
+    x = "Belegdatum",
+    y = "Saldo in EUR",
+    title = "Tagessalden der Umsatzerlöse in EUR"
+  ) +
+  scale_y_continuous(
+    breaks = seq(-2e6, 2.5e6, by = 1e6 / 2),
+    labels = scales::number_format(big.mark = ".",decimal.mark = ",")
+  ) +
+  ggthemes::theme_fivethirtyeight()
+p
+```
+
+- In der zweiten Jahreshälfte nehmen die Erlöse zu
+- Die größten Erlöse fallen auf Frühling und Herbst
+- Vor Weihnachten erfolgen erhebliche Abgänge
+
+## Zeitreihenanalyse: Erwartungswert bilden
+```{r fit, fig.width=8, fig.height=3.5}
+fit <- lm(Betrag ~ poly(t_linear, degree = 7), data = ue_by_belegdatum)
+fitted <- predict(fit, se = TRUE)
+ue_post_fit <- bind_cols(
+  ue_by_belegdatum, as.data.frame(fitted[c("fit", "se.fit")])
+)
+ue_post_fit <- mutate(
+  ue_post_fit, lower95 = fit - 1.96 * se.fit, upper95 = fit + 1.96 * se.fit
+)
+p + 
+  geom_ribbon(
+    data = ue_post_fit, aes(ymin = lower95, ymax = upper95),
+    alpha = .25
+  ) +
+  geom_line(data = ue_post_fit, aes(y = fit), colour = "red") +
+  labs(caption = "Fehlerwahrscheinlichkeit 5%")
+```
+
+- Nachfrage des Prüfers: Ich muss jetzt etwa alles prüfen?!
+
+## Zeitreihenanalyse: Auffälligkeiten identifizieren
+
+- Suche nach ungewöhnlichen Datenpunkten
+- Bewertung erfolgt durch Modelldiagnostik
+- Ergebnis: Information über *statistisch* erhebliche Vorhersagefehler
+
+```{r rstudent, fig.width=8, fig.height=3.5}
+ue_post_fit[, "rstudent"] <- rstudent(fit)
+
+ggplot(
+  data = subset(ue_post_fit, abs(rstudent) >= 2),
+  aes(y = abs(rstudent), x = reorder(Belegdatum, abs(rstudent)))
+) +
+  geom_point() +
+  labs(
+    title = "Absolutwert der studentisierten Vorhersagefehler",
+    caption = "|E| >= 2"
+  ) +
+  scale_y_continuous(labels = scales::number_format(big.mark = ".", decimal.mark = ",")) +
+  ggthemes::theme_fivethirtyeight() +
+  coord_flip()
+```
